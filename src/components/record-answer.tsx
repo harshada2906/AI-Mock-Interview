@@ -10,7 +10,7 @@ import {
   VideoOff,
   WebcamIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSpeechToText, { ResultType } from "react-hook-speech-to-text";
 import { useParams } from "react-router-dom";
 import WebCam from "react-webcam";
@@ -44,7 +44,13 @@ export const RecordAnswer = ({
   isWebCam,
   setIsWebCam,
 }: RecordAnswerProps) => {
+  const googleSpeechApiKey = import.meta.env.VITE_GOOGLE_SPEECH_API_KEY as string | undefined;
+  const supportsSpeechRecognition =
+    typeof window !== "undefined" &&
+    ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
+
   const {
+    error,
     interimResult,
     isRecording,
     results,
@@ -53,7 +59,18 @@ export const RecordAnswer = ({
   } = useSpeechToText({
     continuous: true,
     useLegacyResults: false,
+    crossBrowser: !supportsSpeechRecognition && Boolean(googleSpeechApiKey),
+    googleApiKey: googleSpeechApiKey,
   });
+
+  const lastSpeechError = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (error && error !== lastSpeechError.current) {
+      toast.error("Microphone error", { description: error });
+      lastSpeechError.current = error;
+    }
+  }, [error]);
 
   const [userAnswer, setUserAnswer] = useState("");
   const [isAiGenerating, setIsAiGenerating] = useState(false);
@@ -63,6 +80,26 @@ export const RecordAnswer = ({
 
   const { userId } = useAuth();
   const { interviewId } = useParams();
+
+  const requestMicrophonePermission = async () => {
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      toast.error("Microphone not available", {
+        description: "Your browser does not support microphone access.",
+      });
+      return false;
+    }
+
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+      return true;
+    } catch (e) {
+      toast.error("Microphone permission denied", {
+        description:
+          "Please allow microphone access in your browser settings to use speech recording.",
+      });
+      return false;
+    }
+  };
 
   const recordUserAnswer = async () => {
     if (isRecording) {
@@ -84,9 +121,21 @@ export const RecordAnswer = ({
       );
 
       setAiResult(aiResult);
-    } else {
-      startSpeechToText();
+      return;
     }
+
+    if (!supportsSpeechRecognition && !googleSpeechApiKey) {
+      toast.error("Speech recognition is not supported", {
+        description:
+          "Your browser does not support the Web Speech API. Please use Google Chrome, or set VITE_GOOGLE_SPEECH_API_KEY for cross-browser support.",
+      });
+      return;
+    }
+
+    const permissionGranted = await requestMicrophonePermission();
+    if (!permissionGranted) return;
+
+    startSpeechToText();
   };
 
   const cleanJsonResponse = (responseText: string) => {
@@ -269,17 +318,44 @@ export const RecordAnswer = ({
               <Save className="min-w-5 min-h-5" />
             )
           }
-          onClick={() => setOpen(!open)}
-          disbaled={!aiResult}
+          onClick={async () => {
+            if (isRecording) {
+              stopSpeechToText();
+            }
+
+            if (userAnswer?.length < 30) {
+              toast.error("Error", {
+                description: "Your answer should be more than 30 characters",
+              });
+              return;
+            }
+
+            if (!aiResult) {
+              const generated = await generateResult(
+                question.question,
+                question.answer,
+                userAnswer
+              );
+              setAiResult(generated);
+            }
+
+            setOpen(true);
+          }}
         />
       </div>
 
       <div className="w-full mt-4 p-4 border rounded-md bg-gray-50">
         <h2 className="text-lg font-semibold">Your Answer:</h2>
 
-        <p className="text-sm mt-2 text-gray-700 whitespace-normal">
-          {userAnswer || "Start recording to see your ansewer here"}
-        </p>
+        {error && !isRecording ? (
+          <p className="text-sm mt-2 text-red-600 whitespace-normal">
+            {error}
+          </p>
+        ) : (
+          <p className="text-sm mt-2 text-gray-700 whitespace-normal">
+            {userAnswer || "Start recording to see your answer here"}
+          </p>
+        )}
 
         {interimResult && (
           <p className="text-sm text-gray-500 mt-2">
